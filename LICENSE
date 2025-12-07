@@ -1,0 +1,12 @@
+
+---
+
+## **Optional Git Commands to Push to GitHub**
+
+```bash
+git init
+git add .
+git commit -m "fully functional secure password manager"
+git branch -M main
+git remote add origin https://github.com/your-username/SecurePasswordManager.git
+git push -u origin main
