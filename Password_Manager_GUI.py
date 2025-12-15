@@ -1,4 +1,4 @@
-# Password_Manager_Week4_Listbox.py
+# Password_Manager_GUI.py
 import os
 import json
 import secrets
@@ -6,7 +6,7 @@ import string
 import base64
 from datetime import datetime
 import tkinter as tk
-from tkinter import messagebox, simpledialog, filedialog
+from tkinter import messagebox, simpledialog
 import pyperclip
 
 from cryptography.fernet import Fernet
@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 DB_FILE = os.path.join(os.path.dirname(__file__), "passwords.json")
+AUTO_LOCK_MS = 2 * 60 * 1000  # 2 minutes
 
 # ---------- Utilities ----------
 def generate_salt() -> bytes:
@@ -74,16 +75,15 @@ class PasswordManager:
         self.save_database()
 
     def delete_password(self, site):
-        key = site.lower()
-        if key in self.passwords:
-            del self.passwords[key]
+        if site in self.passwords:
+            del self.passwords[site]
             self.save_database()
             return True
         return False
 
     def backup_database(self):
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        backup_file = f"passwords_backup_{timestamp}.json"
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        backup_file = f"passwords_backup_{ts}.json"
         with open(DB_FILE, "r") as f:
             data = f.read()
         with open(backup_file, "w") as f:
@@ -95,59 +95,93 @@ class PasswordManagerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Secure Password Manager")
+        self.root.configure(bg="#2b2b2b")
+
         self.pm = PasswordManager()
+        self.last_activity = None
+        self.lock_job = None
+
         self.master_password_dialog()
         self.create_widgets()
         self.refresh_listbox()
+        self.reset_auto_lock()
+
+        self.root.bind_all("<Any-KeyPress>", self.reset_auto_lock)
+        self.root.bind_all("<Any-Button>", self.reset_auto_lock)
+
+    # ---------- Security ----------
+    def reset_auto_lock(self, event=None):
+        if self.lock_job:
+            self.root.after_cancel(self.lock_job)
+        self.lock_job = self.root.after(AUTO_LOCK_MS, self.auto_lock)
+
+    def auto_lock(self):
+        messagebox.showwarning("Locked", "Session locked due to inactivity.")
+        self.master_password_dialog()
 
     def master_password_dialog(self):
         while True:
-            master = simpledialog.askstring("Master Password", "Enter master password:", show="*")
+            master = simpledialog.askstring(
+                "Master Password",
+                "Enter master password:",
+                show="*"
+            )
             if not master:
                 self.root.destroy()
                 exit()
             if self.pm.load_database(master):
-                messagebox.showinfo("Success", "Database unlocked!")
+                messagebox.showinfo("Unlocked", "Database unlocked!")
                 break
             else:
-                retry = messagebox.askretrycancel("Error", "Wrong master password or corrupted file.")
+                retry = messagebox.askretrycancel("Error", "Wrong password.")
                 if not retry:
                     self.root.destroy()
                     exit()
 
+    # ---------- UI ----------
     def create_widgets(self):
-        # Listbox for sites
-        tk.Label(self.root, text="Stored Sites:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.site_listbox = tk.Listbox(self.root, height=10, width=30)
-        self.site_listbox.grid(row=1, column=0, rowspan=6, padx=5, pady=5)
+        fg = "white"
+        bg = "#2b2b2b"
+
+        tk.Label(self.root, text="Search:", fg=fg, bg=bg).grid(row=0, column=0, sticky="w")
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *_: self.refresh_listbox())
+        tk.Entry(self.root, textvariable=self.search_var).grid(row=1, column=0, padx=5, pady=5)
+
+        self.site_listbox = tk.Listbox(self.root, height=12, width=30)
+        self.site_listbox.grid(row=2, column=0, rowspan=6, padx=5)
         self.site_listbox.bind("<<ListboxSelect>>", self.load_selected_site)
 
-        # Username & Password Entries
-        tk.Label(self.root, text="Username:").grid(row=1, column=1, sticky="w")
+        tk.Label(self.root, text="Username:", fg=fg, bg=bg).grid(row=2, column=1, sticky="w")
         self.user_entry = tk.Entry(self.root, width=30)
-        self.user_entry.grid(row=2, column=1, pady=2)
+        self.user_entry.grid(row=3, column=1)
 
-        tk.Label(self.root, text="Password:").grid(row=3, column=1, sticky="w")
+        tk.Label(self.root, text="Password:", fg=fg, bg=bg).grid(row=4, column=1, sticky="w")
         self.pwd_entry = tk.Entry(self.root, width=30, show="*")
-        self.pwd_entry.grid(row=4, column=1, pady=2)
+        self.pwd_entry.grid(row=5, column=1)
 
-        # Buttons
-        tk.Button(self.root, text="Add / Update", command=self.add_password).grid(row=5, column=1, pady=2)
-        tk.Button(self.root, text="Delete", command=self.delete_password).grid(row=6, column=1, pady=2)
-        tk.Button(self.root, text="Copy Password", command=self.copy_password).grid(row=7, column=1, pady=2)
-        tk.Button(self.root, text="Reveal Password", command=self.reveal_password).grid(row=8, column=1, pady=2)
-        tk.Button(self.root, text="Generate Strong Password", command=self.generate_password).grid(row=9, column=1, pady=2)
-        tk.Button(self.root, text="Backup Database", command=self.backup_database).grid(row=10, column=1, pady=2)
+        buttons = [
+            ("Add / Update", self.add_password),
+            ("Delete", self.delete_password),
+            ("Copy Password", self.copy_password),
+            ("Reveal Password", self.reveal_password),
+            ("Generate Password", self.generate_password),
+            ("Backup Database", self.backup_database),
+        ]
 
-        # Output Box
-        self.output = tk.Text(self.root, height=10, width=60)
-        self.output.grid(row=11, column=0, columnspan=2, pady=5)
+        for i, (text, cmd) in enumerate(buttons):
+            tk.Button(self.root, text=text, command=cmd).grid(row=6 + i, column=1, pady=2)
+
+        self.output = tk.Text(self.root, height=8, width=60)
+        self.output.grid(row=14, column=0, columnspan=2, pady=10)
 
     # ---------- Actions ----------
     def refresh_listbox(self):
+        query = self.search_var.get().lower()
         self.site_listbox.delete(0, tk.END)
-        for site in sorted(self.pm.passwords.keys()):
-            self.site_listbox.insert(tk.END, site.title())
+        for site in sorted(self.pm.passwords):
+            if query in site:
+                self.site_listbox.insert(tk.END, site.title())
 
     def load_selected_site(self, event=None):
         sel = self.site_listbox.curselection()
@@ -161,54 +195,41 @@ class PasswordManagerGUI:
         self.pwd_entry.insert(0, entry["password"])
 
     def add_password(self):
-        site_idx = self.site_listbox.curselection()
-        site = self.site_listbox.get(site_idx[0]) if site_idx else simpledialog.askstring("Site", "Enter site name:")
-        username = self.user_entry.get().strip()
-        password = self.pwd_entry.get().strip()
-        if not site or not username or not password:
-            messagebox.showwarning("Input Error", "Fill all fields.")
+        site = simpledialog.askstring("Site", "Enter site name:")
+        if not site:
             return
-        self.pm.add_or_update_password(site, username, password)
+        self.pm.add_or_update_password(
+            site,
+            self.user_entry.get(),
+            self.pwd_entry.get()
+        )
         self.refresh_listbox()
-        self.output.insert(tk.END, f"Saved '{site}'\n")
+        self.output.insert(tk.END, f"Saved {site}\n")
 
     def delete_password(self):
         sel = self.site_listbox.curselection()
         if not sel:
-            messagebox.showwarning("Delete", "Select a site first.")
             return
         site = self.site_listbox.get(sel[0]).lower()
-        confirm = messagebox.askyesno("Confirm Delete", f"Delete '{site.title()}'?")
-        if confirm:
+        if messagebox.askyesno("Confirm", f"Delete {site}?"):
             self.pm.delete_password(site)
             self.refresh_listbox()
-            self.output.insert(tk.END, f"Deleted '{site}'\n")
 
     def copy_password(self):
-        pwd = self.pwd_entry.get()
-        if not pwd:
-            return
-        try:
-            pyperclip.copy(pwd)
-            self.output.insert(tk.END, "Password copied to clipboard!\n")
-        except:
-            self.output.insert(tk.END, "Clipboard copy failed.\n")
+        pyperclip.copy(self.pwd_entry.get())
+        self.output.insert(tk.END, "Password copied\n")
 
     def reveal_password(self):
-        pwd = self.pwd_entry.get()
-        if not pwd:
-            return
-        messagebox.showinfo("Password", pwd)
+        messagebox.showinfo("Password", self.pwd_entry.get())
 
     def generate_password(self):
-        pwd = generate_strong_password(16)
+        pwd = generate_strong_password()
         self.pwd_entry.delete(0, tk.END)
         self.pwd_entry.insert(0, pwd)
-        self.output.insert(tk.END, f"Generated password: {pwd}\n")
 
     def backup_database(self):
-        backup_file = self.pm.backup_database()
-        self.output.insert(tk.END, f"Backup created: {backup_file}\n")
+        file = self.pm.backup_database()
+        self.output.insert(tk.END, f"Backup: {file}\n")
 
 # ---------- Run ----------
 if __name__ == "__main__":
